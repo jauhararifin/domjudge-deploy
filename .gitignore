@@ -1,0 +1,10 @@
+.terraform*
+terraform.tfstate
+terraform.tfstate.backup
+domjudge-key
+domjudge-key.pub
+hosts
+vars.yml
+terraform.tfvars
+judgehost.retry
+domjudge.retry

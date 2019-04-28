@@ -1,0 +1,177 @@
+---
+- hosts: [domserver, judgehost]
+  tasks:
+    - name: check if domjudge extracted folder already exists
+      stat:
+        path: /tmp/domjudge/
+      register: domjudge_extracted_source
+
+    - name: Create /tmp/domjudge directory
+      file:
+        path: /tmp/domjudge
+        state: directory
+      when: not domjudge_extracted_source.stat.exists
+
+    - name: Extract DOMJudge into /tmp/domjudge
+      unarchive:
+        src: https://www.domjudge.org/releases/domjudge-6.0.3.tar.gz
+        dest: /tmp/domjudge
+        remote_src: yes
+        extra_opts: [--strip-components=1]
+      when: not domjudge_extracted_source.stat.exists
+
+    - name: Install required packages
+      become: true
+      apt:
+        name:
+          - gcc
+          - g++
+          - libcgroup-dev
+          - libcurl4-gnutls-dev
+          - libjsoncpp-dev
+          - make
+          - php-cli
+          - php-curl
+          - php-json
+          - php-xml
+          - php-zip
+          - procps
+        update_cache: true
+        state: present
+
+    - name: Run ./configure
+      command: ./configure --with-domjudge-user=root
+      args:
+        chdir: /tmp/domjudge
+
+- hosts: domserver
+  roles:
+    - role: geerlingguy.mysql
+      become: yes
+      vars:
+        mysql_user_home: /root
+        mysql_user_name: root
+        mysql_user_password: root
+  tasks:
+    - name: Install domserver
+      become: true
+      command: make install-domserver
+      args:
+        chdir: /tmp/domjudge/
+
+    - name: Check generated password for mysql
+      become: true
+      stat:
+        path: "/opt/domjudge/domserver/etc/dbpasswords.secret"
+      register: dbpassword_secret
+
+    - name: Run dj_setup_database genpass
+      become: true
+      command: ./dj_setup_database genpass
+      args:
+        chdir: /opt/domjudge/domserver/bin
+      when: not dbpassword_secret.stat.exists
+
+    # TODO: fix this
+    - name: Run dj_setup_database install
+      become: true
+      command: ./dj_setup_database install
+      args:
+        chdir: /opt/domjudge/domserver/bin
+      ignore_errors: True
+
+    - name: Install packages
+      become: true
+      apt:
+        name: [apache2, php-mysql, php]
+        update_cache: true
+        state: present
+
+    - name: Link apache.conf to /etc/apache2/conf-available/domjudge.conf
+      become: true
+      file:
+        src: "/opt/domjudge/domserver/etc/apache.conf"
+        dest: "/etc/apache2/conf-available/domjudge.conf"
+        state: link
+
+    - name: Enable Apache 2 php and rewrite module
+      become: true
+      apache2_module:
+        state: present
+        name: rewrite
+
+    - name: Enabling Apache 2 domserver conf
+      become: true
+      command: a2enconf domjudge
+      args:
+        creates: "/etc/apache2/conf-enabled/domjudge.conf"
+
+    - name: Reload Apache 2
+      become: true
+      service:
+        name: apache2
+        state: reloaded
+
+    - name: Clear cache
+      become: true
+      command: bin/console cache:clear --env=prod
+      args:
+        chdir: /opt/domjudge/domserver/webapp
+
+- hosts: judgehost
+  vars_files:
+    - ./vars.yml
+  tasks:
+    - name: Install judgehost
+      become: true
+      command: make install-judgehost
+      args:
+        chdir: /tmp/domjudge/
+
+    - name: Add domjudge-run group
+      become: true
+      group:
+        name: domjudge-run
+        state: present
+
+    - name: Add domjudge-run user
+      become: true
+      user:
+        name: domjudge-run
+        group: domjudge-run
+        shell: /bin/false
+        create_home: no
+
+    - name: Copy sudoers configuration file
+      become: true
+      copy:
+        src: /opt/domjudge/judgehost/etc/sudoers-domjudge
+        dest: /etc/sudoers.d/sudoers-domjudge
+        owner: root
+        remote_src: yes
+        mode: 0440
+
+    - name: Create cgroup
+      become: true
+      command: bin/create_cgroups
+      args:
+        chdir: /opt/domjudge/judgehost
+
+    - name: Install required packages
+      become: true
+      apt:
+        name: [g++, gcc, unzip]
+        state: present
+        update_cache: yes
+
+    - name: Make chroot ecosystem
+      become: true
+      command: bin/dj_make_chroot -y
+      args:
+        chdir: /opt/domjudge/judgehost
+
+    - name: Create restapi secret config file
+      become: true
+      copy:
+        content: default {{domserver_path}}/api/ {{judgehost_user}} {{judgehost_pass}}
+        dest: /opt/domjudge/judgehost/etc/restapi.secret

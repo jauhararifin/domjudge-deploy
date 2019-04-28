@@ -1,0 +1,9 @@
+---
+- hosts: judgehost
+  gather_facts: no
+  tasks:
+    - name: Start judgedaemon
+      become: true
+      command: bin/judgedaemon
+      args:
+        chdir: /opt/domjudge/judgehost/
